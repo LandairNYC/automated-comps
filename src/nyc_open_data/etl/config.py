@@ -85,4 +85,12 @@ DATASETS: Dict[str, DatasetConfig] = {
         limit = 50_000,
         max_rows = 200_000,
     ),
+
+    "sales_rolling": DatasetConfig(
+        name="NYC Citywide Rolling Calendar Sales",
+        dataset_id="usep-8jbt",
+        table_name="stg_sales_raw",
+        limit=50_000,
+        max_rows=200_000,
+    ),
 }
