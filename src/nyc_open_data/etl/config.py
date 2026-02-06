@@ -85,13 +85,13 @@ DATASETS: Dict[str, DatasetConfig] = {
         name="ACRIS Real Property Master",
         dataset_id="bnx9-e6tj",
         table_name="stg_acris_master",
-        limit=50_000,
+        limit=20_000,
         max_rows=200_000,
     ),
-    "acris_legal": DatasetConfig(
+    "acris_legals": DatasetConfig(
         name="ACRIS Real Property Legals",
         dataset_id="8h5j-fqxa",
-        table_name="stg_acris_legal",
+        table_name="stg_acris_legals",
         limit=50_000,
         max_rows=200_000,
     ),

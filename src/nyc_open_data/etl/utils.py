@@ -67,7 +67,7 @@ def fetch_page(
     http = session or requests
 
     print(f"[utils] Requesting {url} with offset={offset} and limit={limit}")
-    resp = http.get(url, params=params, timeout=60)
+    resp = http.get(url, params=params, timeout=(10, 180))
 
     if resp.status_code == 429:
         raise RuntimeError("Rate limited (429) after retries")
