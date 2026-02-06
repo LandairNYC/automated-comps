@@ -1,33 +1,44 @@
-from typing import Optional 
+from typing import Optional
 from sqlalchemy.engine import Engine
+
 from .config import DATASETS, get_engine, DatasetConfig
 from .utils import fetch_all, normalize_columns, write_dataframe
+from .runlog import start_run, finish_run_success, finish_run_failed
 
-def load_acris_parties(engine: Optional[Engine] = None, max_rows: Optional[int] = None) -> None: 
+
+def load_acris_parties(engine: Optional[Engine] = None, max_rows: Optional[int] = None) -> None:
     config: DatasetConfig = DATASETS["acris_parties"]
 
-    if max_rows is not None: 
+    if max_rows is not None:
         config = DatasetConfig(
-            name = config.name, 
-            dataset_id = config.dataset_id, 
-            table_name = config.table_name, 
-            limit = config.limit, 
-            max_rows = max_rows, 
+            name=config.name,
+            dataset_id=config.dataset_id,
+            table_name=config.table_name,
+            limit=config.limit,
+            max_rows=max_rows,
         )
 
-    if engine is None: 
+    if engine is None:
         engine = get_engine()
 
-        print(f"[acris_parties] Loading dataset `{config.name}` ({config.dataset_id})")
+    run = start_run(engine, "acris_parties")
+
+    try:
+        print(f"[acris_parties] Loading dataset '{config.name}' ({config.dataset_id})")
 
         df = fetch_all(config)
 
         if df.empty:
-            print("[acris_parties] No rows returned from ACRIS Parties.")
-            return 
-        
+            raise RuntimeError("No rows returned from ACRIS Parties")
+
         print(f"[acris_parties] DataFrame shape: {df.shape}")
         df = normalize_columns(df)
 
-        write_dataframe(df, config, engine, if_exists="replace")
+        write_dataframe(df, config, engine, if_exists="replace", run_id=run.run_id)
+
+        finish_run_success(engine, run, rows=len(df))
         print("[acris_parties] Done.")
+
+    except Exception as e:
+        finish_run_failed(engine, run, e)
+        raise
