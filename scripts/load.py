@@ -2,7 +2,8 @@
 import argparse
 import sys
 
-# Import loaders from your ETL package
+from src.nyc_open_data.etl.acris_legals import load_acris_legals
+from src.nyc_open_data.etl.acris_parties import load_acris_parties
 from src.nyc_open_data.etl.pluto import load_pluto
 from src.nyc_open_data.etl.acris_master import load_acris_master
 from src.nyc_open_data.etl.sales_rolling import load_sales_rolling
@@ -11,6 +12,8 @@ from src.nyc_open_data.etl.sales_rolling import load_sales_rolling
 LOADERS = {
     "pluto": load_pluto,
     "acris_master": load_acris_master,
+    "acris_parties": load_acris_parties,
+    "acris_legals": load_acris_legals,
     "sales_rolling": load_sales_rolling,
     # We'll add sales_rolling here next
     # "sales_rolling": load_sales_rolling,
