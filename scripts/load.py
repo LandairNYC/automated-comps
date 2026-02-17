@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import sys
+import os
 
 from src.nyc_open_data.etl.acris_legals import load_acris_legals
 from src.nyc_open_data.etl.acris_parties import load_acris_parties
@@ -15,8 +16,6 @@ LOADERS = {
     "acris_parties": load_acris_parties,
     "acris_legals": load_acris_legals,
     "sales_rolling": load_sales_rolling,
-    # We'll add sales_rolling here next
-    # "sales_rolling": load_sales_rolling,
 }
 
 
