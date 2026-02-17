@@ -70,7 +70,7 @@ class DatasetConfig:
     dataset_id: str
     table_name: str
     limit: int = 50_000
-    max_rows: Optional[int] = 200_000
+    max_rows: Optional[int] = None
 
 
 DATASETS: Dict[str, DatasetConfig] = {
@@ -79,34 +79,34 @@ DATASETS: Dict[str, DatasetConfig] = {
         dataset_id="64uk-42ks",
         table_name="stg_pluto_raw",
         limit=50_000,
-        max_rows=200_000,
+        max_rows=None,
     ),
     "acris_master": DatasetConfig(
         name="ACRIS Real Property Master",
         dataset_id="bnx9-e6tj",
         table_name="stg_acris_master",
         limit=20_000,
-        max_rows=200_000,
+        max_rows=None,
     ),
     "acris_legals": DatasetConfig(
         name="ACRIS Real Property Legals",
         dataset_id="8h5j-fqxa",
         table_name="stg_acris_legals",
         limit=50_000,
-        max_rows=200_000,
+        max_rows=None,
     ),
     "acris_parties": DatasetConfig(
         name="ACRIS Real Property Parties",
         dataset_id="636b-3b5g",
         table_name="stg_acris_parties",
         limit=50_000,
-        max_rows=200_000,
+        max_rows=None,
     ),
     "sales_rolling": DatasetConfig(
         name="NYC Citywide Rolling Calendar Sales",
         dataset_id="usep-8jbt",
         table_name="stg_sales_raw",
         limit=50_000,
-        max_rows=200_000,
+        max_rows=None,
     ),
 }

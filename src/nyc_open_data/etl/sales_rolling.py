@@ -11,7 +11,7 @@ from .runlog import start_run, finish_run_success, finish_run_failed
 def load_sales_rolling(
     engine: Optional[Engine] = None,
     max_rows: Optional[int] = None,
-    days_back: int = 45,
+    days_back: int = 547,
 ) -> None:
     config: DatasetConfig = DATASETS["sales_rolling"]
 

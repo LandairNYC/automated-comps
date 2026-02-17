@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Dict
 from sqlalchemy.engine import Engine
 
 from .config import DATASETS, get_engine, DatasetConfig
@@ -26,7 +26,12 @@ def load_acris_master(engine: Optional[Engine] = None, max_rows: Optional[int] =
     try:
         print(f"[acris_master] Loading dataset `{config.name}` ({config.dataset_id})")
 
-        df = fetch_all(config)
+        # Filter for recent data only (2020+)
+        extra_params: Dict[str, str] = {
+            "$where": "good_through_date >= '2020-01-01'"
+        }
+
+        df = fetch_all(config, extra_params=extra_params)
 
         if df.empty:
             raise RuntimeError("No rows returned from ACRIS Master")
@@ -34,7 +39,6 @@ def load_acris_master(engine: Optional[Engine] = None, max_rows: Optional[int] =
         print(f"[acris_master] DataFrame shape: {df.shape}")
         df = normalize_columns(df)
 
-        # atomic swap requires run_id
         write_dataframe(df, config, engine, if_exists="replace", run_id=run.run_id)
 
         finish_run_success(engine, run, rows=len(df))
