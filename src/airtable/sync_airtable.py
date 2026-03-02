@@ -1,243 +1,311 @@
 import os
-from pyairtable import Api
+import time
+import argparse
+from difflib import SequenceMatcher
+from typing import Dict, List, Optional
+
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
+from pyairtable import Api
+
 
 load_dotenv()
 
-AIRTABLE_PAT = os.getenv('AIRTABLE_PAT')
-AIRTABLE_BASE_ID = os.getenv('AIRTABLE_BASE_ID')
-AIRTABLE_TABLE_NAME = os.getenv('AIRTABLE_TABLE_NAME', 'Property Comps')
-DATABASE_URL = os.getenv('DATABASE_URL')
+DATABASE_URL = os.getenv("DATABASE_URL")
+AIRTABLE_PAT = os.getenv("AIRTABLE_PAT")
+AIRTABLE_BASE_ID = os.getenv("AIRTABLE_BASE_ID")
+AIRTABLE_TABLE_NAME = os.getenv("AIRTABLE_TABLE_NAME", "Property Comps")
+AIRTABLE_AREAS_TABLE = os.getenv("AIRTABLE_AREAS_TABLE", "Areas")
 
-AREA_CACHE = {}
+RATE_SLEEP = 0.20
 
-# Map database asset types to Airtable options
+
+MANUAL_NEIGHBORHOOD_MAP = {
+    "HELL'S KITCHEN": "Hells Kitchen",
+    "MIDTOWN CBD": "Midtown",
+    "MADISON": "Madison",
+    "SCHUYLERVILLE/PELHAM BAY": "Pelham Bay",
+}
+
+
 ASSET_TYPE_MAP = {
-    'Residential Development Site': 'Residential Development Site',
-    'Residential Property': 'Residential Development Site',  # Map to closest match
-    'Vacant Land': 'Residential Development Site',  # Map to closest match
-    'Industrial Development Site': 'Industrial Land',
-    'Industrial Building': 'Industrial Building',
-    'Industrial + Office Building': 'Industrial + Office Building',
+    "Residential Development Site": "Residential Development Site",
+    "Residential Property": "Residential Development Site",
+    "Vacant Land": "Residential Development Site",
+    "Industrial Development Site": "Industrial Land",
+    "Industrial Building": "Industrial Building",
+    "Industrial + Office Building": "Industrial + Office Building",
+    "Mixed Use": "Mixed Use",
+    "Commercial": "Commercial",
 }
 
 
 def get_db_connection():
+    if not DATABASE_URL:
+        raise RuntimeError("Missing DATABASE_URL")
     return psycopg2.connect(DATABASE_URL)
 
 
-def get_airtable_table():
+def get_airtable_tables():
+    if not AIRTABLE_PAT or not AIRTABLE_BASE_ID:
+        raise RuntimeError("Missing AIRTABLE_PAT or AIRTABLE_BASE_ID")
     api = Api(AIRTABLE_PAT)
-    return api.table(AIRTABLE_BASE_ID, AIRTABLE_TABLE_NAME)
+    comps = api.table(AIRTABLE_BASE_ID, AIRTABLE_TABLE_NAME)
+    areas = api.table(AIRTABLE_BASE_ID, AIRTABLE_AREAS_TABLE)
+    return comps, areas
 
 
-def get_areas_table():
-    api = Api(AIRTABLE_PAT)
-    return api.table(AIRTABLE_BASE_ID, 'Areas')
-
-
-def format_bbl(borough, block, lot):
-    if not all([borough, block, lot]):
-        return None
-    return f"{borough}-{str(block).zfill(5)}-{str(lot).zfill(4)}"
-
-
-def map_asset_type(db_asset_type):
-    """Map database asset type to Airtable option"""
-    if not db_asset_type:
+def safe_float(x):
+    try:
+        return float(x) if x is not None else None
+    except Exception:
         return None
 
-    mapped = ASSET_TYPE_MAP.get(db_asset_type)
+
+def safe_int(x):
+    try:
+        return int(x) if x is not None else None
+    except Exception:
+        return None
+
+
+def fuzzy_match(name: str, candidates: List[str], threshold: float = 0.65) -> Optional[str]:
+    name_l = name.lower().strip()
+    best = None
+    best_score = 0.0
+    for c in candidates:
+        score = SequenceMatcher(None, name_l, c.lower().strip()).ratio()
+        if score > best_score:
+            best_score = score
+            best = c
+    return best if best and best_score >= threshold else None
+
+
+def build_area_cache(areas_table):
+    area_lookup: Dict[str, str] = {}
+    area_names: List[str] = []
+    for rec in areas_table.all():
+        nm = rec.get("fields", {}).get("Name")
+        if nm:
+            area_lookup[nm.lower().strip()] = rec["id"]
+            area_names.append(nm)
+    return area_lookup, area_names
+
+
+def resolve_area_id(db_neighborhood: Optional[str], area_lookup: Dict[str, str], area_names: List[str]):
+    if not db_neighborhood:
+        return None
+
+    raw = str(db_neighborhood).strip()
+    upper = raw.upper()
+
+    mapped = MANUAL_NEIGHBORHOOD_MAP.get(upper)
     if mapped:
-        return [mapped]  # Return as array for multiple select
+        rec_id = area_lookup.get(mapped.lower().strip())
+        if rec_id:
+            return [rec_id]
 
-    # If not found in map, return None (skip field)
-    print(f"Warning: Unknown asset type '{db_asset_type}' - skipping")
+    rec_id = area_lookup.get(raw.lower().strip())
+    if rec_id:
+        return [rec_id]
+
+    m = fuzzy_match(raw, area_names, threshold=0.65)
+    if m:
+        rec_id = area_lookup.get(m.lower().strip())
+        if rec_id:
+            return [rec_id]
+
     return None
 
 
-def map_property_to_airtable(row):
-    ppbsf_narrow = None
-    if row.get('sale_price_clean') and row.get('buildable_sf_narrow'):
-        ppbsf_narrow = float(row['sale_price_clean']) / float(row['buildable_sf_narrow'])
+def format_block_lot(borough, block, lot):
+    if borough is None or block is None or lot is None:
+        return None
+    try:
+        return f"{str(borough).strip()}-{str(int(block)).zfill(5)}-{str(int(lot)).zfill(4)}"
+    except Exception:
+        return None
+
+
+def map_asset_type(db_asset_type: Optional[str]):
+    if not db_asset_type:
+        return None
+    raw = str(db_asset_type).strip()
+    mapped = ASSET_TYPE_MAP.get(raw)
+    return [mapped] if mapped else [raw]
+
+
+def fetch_properties(limit: Optional[int] = None) -> List[dict]:
+    query = """
+        SELECT
+            address,
+            borough,
+            block,
+            lot,
+            neighborhood,
+            sale_price_clean,
+            sale_date,
+            zoning,
+            asset_type,
+            building_class,
+            lotarea,
+            bldgarea,
+            lot_frontage,
+            lot_depth,
+            buildable_sf_narrow,
+            buildable_sf_wide,
+            official_far_narrow,
+            unitsres,
+            buyer_names,
+            seller_names
+        FROM comps_dev_base_v2
+        ORDER BY sale_date DESC
+    """
+    if limit:
+        query += f" LIMIT {int(limit)}"
+
+    with get_db_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(query)
+            return [dict(r) for r in cur.fetchall()]
+
+
+def map_row_to_airtable_fields(row: dict, area_lookup: Dict[str, str], area_names: List[str], area_misses: List[str]):
+    closing_date = row.get("sale_date")
+    if closing_date and hasattr(closing_date, "strftime"):
+        closing_date = closing_date.strftime("%Y-%m-%d")
+    elif closing_date:
+        closing_date = str(closing_date)[:10]
 
     fields = {
-        'Address': row.get('address'),
-        'Closing Price': float(row['sale_price_clean']) if row.get('sale_price_clean') else None,
-        'Closing Date': row.get('sale_date').strftime('%Y-%m-%d') if row.get('sale_date') else None,
-        'Zones (Manual)': row.get('zoning'),
-        'Lot Sqft': float(row['lotarea']) if row.get('lotarea') else None,
-        'Building Sq. Ft.': float(row['bldgarea']) if row.get('bldgarea') else None,
-        'Lot Width (Feet)': float(row['lot_frontage']) if row.get('lot_frontage') else None,
-        'Lot Depth (Feet)': float(row['lot_depth']) if row.get('lot_depth') else None,
-        'Buyer Name': row.get('buyer_names'),
-        'Buildable Sq. Ft.': float(row['buildable_sf_narrow']) if row.get('buildable_sf_narrow') else None,
-        'PPBSF': ppbsf_narrow,
-        'PPLSF': float(row['price_per_land_sf']) if row.get('price_per_land_sf') else None,
-        'PPSF': float(row['price_per_bldg_sf']) if row.get('price_per_bldg_sf') else None,
-        'Res Units': int(row['unitsres']) if row.get('unitsres') else None,
-        'Buildable SF Wide': float(row['buildable_sf_wide']) if row.get('buildable_sf_wide') else None,
-        'Res FAR': float(row['official_far_narrow']) if row.get('official_far_narrow') else None,
-        'Seller Name': row.get('seller_names'),
-        'Block & Lot': format_bbl(row.get('borough'), row.get('block'), row.get('lot')),
-        'Building Class RAW': row.get('building_class'),
-        'BSF Type': 'Market Rate',
-        'Data Source': 'Auto-Sync',
+        "Address": row.get("address"),
+        "Closing Price": safe_float(row.get("sale_price_clean")),
+        "Closing Date": closing_date,
+        "Buyer Name Text": row.get("buyer_names"),
+        "Seller Name Text": row.get("seller_names"),
+        "Zones (Manual)": row.get("zoning"),
+        "Lot Sqft": safe_float(row.get("lotarea")),
+        "Building Sq. Ft.": safe_float(row.get("bldgarea")),
+        "Lot Width (Feet)": safe_float(row.get("lot_frontage")),
+        "Lot Depth (Feet)": safe_float(row.get("lot_depth")),
+        "Buildable Sq. Ft.": safe_float(row.get("buildable_sf_narrow")),
+        "Buildable SF Wide": safe_float(row.get("buildable_sf_wide")),  # Airtable column typo
+        "Res FAR": safe_float(row.get("official_far_narrow")),
+        "Residential Units": safe_int(row.get("unitsres")),
+        "Building Class RAW": row.get("building_class"),
+        "BSF Type": "Market Rate",
+        "Data Source": "Auto-Sync",
     }
 
-    # Map Asset Type
-    asset_type = map_asset_type(row.get('asset_type'))
-    if asset_type:
-        fields['Asset Type'] = asset_type
+    asset = map_asset_type(row.get("asset_type"))
+    if asset:
+        fields["Asset Type"] = asset
 
-    # Handle Area
-    if row.get('neighborhood') and row['neighborhood'] in AREA_CACHE:
-        fields['Area'] = [AREA_CACHE[row['neighborhood']]]
+    key = format_block_lot(row.get("borough"), row.get("block"), row.get("lot"))
+    if key:
+        fields["Block & Lot"] = key
+
+    area_ids = resolve_area_id(row.get("neighborhood"), area_lookup, area_names)
+    if area_ids:
+        fields["Area"] = area_ids
+    else:
+        if row.get("neighborhood"):
+            area_misses.append(str(row.get("neighborhood")))
 
     return {k: v for k, v in fields.items() if v is not None}
 
 
-def fetch_properties_from_db(limit=None):
-    query = """
-            SELECT address, \
-                   borough, \
-                   block, \
-                   lot, \
-                   neighborhood, \
-                   sale_price_clean, \
-                   sale_date, \
-                   zoning, \
-                   asset_type, \
-                   building_class, \
-                   lotarea, \
-                   bldgarea, \
-                   lot_frontage, \
-                   lot_depth, \
-                   buildable_sf_narrow, \
-                   buildable_sf_wide, \
-                   official_far_narrow, \
-                   price_per_land_sf, \
-                   price_per_bldg_sf, \
-                   buyer_names, \
-                   seller_names, \
-                   unitsres
-            FROM comps_dev_base
-            ORDER BY sale_date DESC \
-            """
-
-    if limit:
-        query += f" LIMIT {limit}"
-
-    conn = get_db_connection()
-
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute(query)
-        rows = cur.fetchall()
-        print(f"Fetched {len(rows)} properties")
-        return rows, conn
+def build_existing_map(comps_table) -> Dict[str, str]:
+    existing = comps_table.all(formula="{Data Source} = 'Auto-Sync'")
+    m = {}
+    for rec in existing:
+        key = rec.get("fields", {}).get("Block & Lot")
+        if key:
+            m[str(key)] = rec["id"]
+    return m
 
 
-def sync_to_airtable(test=False, limit=None):
-    print("=" * 60)
-    print("AIRTABLE SYNC")
-    print("=" * 60)
+def sync(limit: Optional[int] = None, dry_run: bool = False):
+    comps_table, areas_table = get_airtable_tables()
 
-    if not AIRTABLE_PAT or not AIRTABLE_BASE_ID:
-        print("ERROR: Missing Airtable credentials")
-        return False
+    print("=" * 70)
+    print("AIRTABLE SYNC (comps_dev_base_v2 -> Property Comps)")
+    print("=" * 70)
+    print(f"Base:  {AIRTABLE_BASE_ID}")
+    print(f"Table: {AIRTABLE_TABLE_NAME}")
 
-    table = get_airtable_table()
-    print(f"Connected to base: {AIRTABLE_BASE_ID}")
+    print("Loading Areas...")
+    area_lookup, area_names = build_area_cache(areas_table)
+    print(f"Areas loaded: {len(area_lookup)}")
 
-    # Pre-load Area cache
-    print("Loading Areas table...")
-    try:
-        areas_table = get_areas_table()
-        all_areas = areas_table.all()
-        for area in all_areas:
-            area_name = area['fields'].get('Name')
-            if area_name:
-                AREA_CACHE[area_name] = area['id']
-        print(f"Loaded {len(AREA_CACHE)} areas")
-    except Exception as e:
-        print(f"Warning: Could not load areas: {e}")
+    print("Loading existing Auto-Sync records...")
+    existing_map = build_existing_map(comps_table)
+    print(f"Existing Auto-Sync keys: {len(existing_map)}")
 
-    rows, conn = fetch_properties_from_db(limit=limit)
+    print("Fetching from DB...")
+    rows = fetch_properties(limit=limit)
+    print(f"Fetched: {len(rows)}")
 
-    if not test:
-        print("Checking for existing Auto-Sync records...")
-        try:
-            existing = table.all(formula="{Data Source} = 'Auto-Sync'")
-            print(f"Found {len(existing)} existing")
+    area_misses: List[str] = []
+    payloads: List[tuple] = []
 
-            if existing:
-                print("Deleting old records...")
-                for i in range(0, len(existing), 10):
-                    batch = existing[i:i + 10]
-                    table.batch_delete([r['id'] for r in batch])
-                print(f"Deleted {len(existing)}")
-        except Exception as e:
-            print(f"Note: {e}")
+    for r in rows:
+        fields = map_row_to_airtable_fields(r, area_lookup, area_names, area_misses)
+        key = fields.get("Block & Lot")
+        if key:
+            payloads.append((key, fields))
 
-    print(f"Uploading {len(rows)} records...")
+    print(f"Prepared: {len(payloads)} records (skipped no key: {len(rows) - len(payloads)})")
 
-    uploaded = 0
+    if dry_run:
+        print("\n[DRY RUN] First 5 mapped records:")
+        for key, f in payloads[:5]:
+            print(f"  Key={key} | Address={f.get('Address')} | Area={f.get('Area', 'NO MATCH')} | Asset={f.get('Asset Type')}")
+        if area_misses:
+            uniq = sorted(set(area_misses))
+            print(f"\n[DRY RUN] Area misses ({len(uniq)} unique). First 20:")
+            for x in uniq[:20]:
+                print(f"  - {x}")
+        return
+
+    created = 0
+    updated = 0
     errors = 0
 
-    for i in range(0, len(rows), 10):
-        batch = rows[i:i + 10]
-        airtable_records = []
+    print("\nUpserting to Airtable...")
+    for key, fields in payloads:
+        try:
+            rec_id = existing_map.get(key)
+            if rec_id:
+                comps_table.update(rec_id, fields)
+                updated += 1
+            else:
+                rec = comps_table.create(fields)
+                existing_map[key] = rec["id"]
+                created += 1
+        except Exception as e:
+            errors += 1
+            print("Error:", key, e)
 
-        for row in batch:
-            try:
-                fields = map_property_to_airtable(row)
-                airtable_records.append(fields)
-            except Exception as e:
-                print(f"Map error: {row.get('address')}: {e}")
-                errors += 1
+        time.sleep(RATE_SLEEP)
 
-        if airtable_records:
-            try:
-                table.batch_create(airtable_records)
-                uploaded += len(airtable_records)
-                if (i // 10 + 1) % 10 == 0:
-                    print(f"Progress: {uploaded}/{len(rows)}")
-            except Exception as e:
-                print(f"Upload error batch {i // 10 + 1}: {e}")
-                errors += len(airtable_records)
-                if uploaded == 0:
-                    print("First batch failed - stopping")
-                    break
+    print("\n" + "=" * 70)
+    print("Created:", created)
+    print("Updated:", updated)
+    print("Errors:", errors)
 
-    conn.close()
-
-    print("=" * 60)
-    print(f"Uploaded: {uploaded}")
-    print(f"Errors: {errors}")
-    if uploaded > 0:
-        print(f"Total in Airtable: ~{uploaded + 40}")
-    print("=" * 60)
-
-    return True
+    if area_misses:
+        uniq = sorted(set(area_misses))
+        print("\nArea misses (unique):", len(uniq))
+        for x in uniq[:30]:
+            print(" -", x)
+    print("=" * 70)
 
 
 if __name__ == "__main__":
-    import argparse
-
     parser = argparse.ArgumentParser()
-    parser.add_argument('--test', action='store_true')
-    parser.add_argument('--limit', type=int)
-    parser.add_argument('--all', action='store_true')
-
+    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-
-    if args.test:
-        sync_to_airtable(test=True, limit=10)
-    elif args.limit:
-        sync_to_airtable(test=False, limit=args.limit)
-    elif args.all:
-        sync_to_airtable(test=False, limit=None)
-    else:
-        print("Usage: python sync_to_airtable.py --test|--limit N|--all")
+    sync(limit=args.limit, dry_run=args.dry_run)
