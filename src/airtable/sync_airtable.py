@@ -548,13 +548,16 @@ def map_row_to_airtable_fields(row: dict, area_lookup: Dict[str, str], area_name
 
 
 def build_existing_map(comps_table) -> Dict[str, str]:
-    existing = comps_table.all(formula="{Data Source} = 'Auto-Sync'")
-    m = {}
-    for rec in existing:
-        key = rec.get("fields", {}).get("Block & Lot")
-        if key:
-            m[str(key)] = rec["id"]
-    return m
+    try:
+        existing = comps_table.all(formula="{Data Source} = 'Auto-Sync'")
+        m = {}
+        for rec in existing:
+            key = rec.get("fields", {}).get("Block & Lot")
+            if key:
+                m[str(key)] = rec["id"]
+        return m
+    except Exception:
+        return {}
 
 
 def sync(limit: Optional[int] = None, dry_run: bool = False):
