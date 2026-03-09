@@ -406,7 +406,7 @@ def map_asset_type(db_asset_type: Optional[str]):
     return mapped if mapped else raw
 
 
-def fetch_properties(limit: Optional[int] = None) -> List[dict]:
+def fetch_properties(limit: Optional[int] = None, since_date: Optional[str] = None) -> List[dict]:
     query = """
         SELECT
             -- Identity
@@ -560,7 +560,7 @@ def build_existing_map(comps_table) -> Dict[str, str]:
         return {}
 
 
-def sync(limit: Optional[int] = None, dry_run: bool = False):
+def sync(limit=None, dry_run=False, since_date=None):
     comps_table, areas_table = get_airtable_tables()
 
     print("=" * 70)
@@ -578,7 +578,7 @@ def sync(limit: Optional[int] = None, dry_run: bool = False):
     print(f"Existing Auto-Sync keys: {len(existing_map)}")
 
     print("Fetching from DB...")
-    rows = fetch_properties(limit=limit)
+    rows = fetch_properties(limit=limit, since_date=since_date)
     print(f"Fetched: {len(rows)}")
 
     area_misses: List[str] = []
@@ -641,5 +641,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--since", type=str, default=None, help="Only sync records since this date YYYY-MM-DD")
     args = parser.parse_args()
-    sync(limit=args.limit, dry_run=args.dry_run)
+    sync(limit=args.limit, dry_run=args.dry_run, since_date=args.since)
