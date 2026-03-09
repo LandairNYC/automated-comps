@@ -1,0 +1,71 @@
+name: CompScope Weekly Sync
+
+on:
+  schedule:
+    # Every Monday at 8:00 AM EST (13:00 UTC)
+    - cron: "0 13 * * 1"
+
+  # Allow manual trigger from GitHub Actions UI
+  workflow_dispatch:
+    inputs:
+      since:
+        description: "Override cutoff date (YYYY-MM-DD). Leave blank to use last run date."
+        required: false
+        default: ""
+      skip_extract:
+        description: "Skip NYC Open Data extraction?"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+jobs:
+  sync:
+    name: Run Incremental Pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run pipeline
+        env:
+          DATABASE_URL:            ${{ secrets.DATABASE_URL }}
+          AIRTABLE_PAT:            ${{ secrets.AIRTABLE_PAT }}
+          AIRTABLE_BASE_ID:        ${{ secrets.AIRTABLE_BASE_ID }}
+          AIRTABLE_TABLE_NAME:     ${{ secrets.AIRTABLE_TABLE_NAME }}
+          AIRTABLE_AREAS_TABLE:    ${{ secrets.AIRTABLE_AREAS_TABLE }}
+          NYC_OPEN_DATA_APP_TOKEN: ${{ secrets.NYC_OPEN_DATA_APP_TOKEN }}
+          SLACK_WEBHOOK_URL:       ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          ARGS="--notify"
+
+          if [ "${{ github.event.inputs.skip_extract }}" = "true" ]; then
+            ARGS="$ARGS --skip-extract"
+          fi
+
+          if [ -n "${{ github.event.inputs.since }}" ]; then
+            ARGS="$ARGS --since ${{ github.event.inputs.since }}"
+          fi
+
+          python pipeline.py $ARGS
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-failure-log
+          path: "*.log"
+          retention-days: 7
