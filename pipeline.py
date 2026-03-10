@@ -101,18 +101,28 @@ def run_extract(cutoff_date: str):
     log("STEP 1: Refreshing staging data from NYC Open Data", "STEP")
     start = time.time()
 
-    for dataset in DATASETS_FULL:
-        log(f"  Refreshing {dataset}...")
-        ds_start = time.time()
-        result = subprocess.run(
-            [sys.executable, "scripts/load.py", dataset],
-            capture_output=True, text=True
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"Extract failed for {dataset}:\n{result.stderr[-500:]}")
-        log(f"  {dataset} done ({elapsed(ds_start)})")
+    from src.nyc_open_data.etl.pluto import load_pluto
+    from src.nyc_open_data.etl.acris_master import load_acris_master
+    from src.nyc_open_data.etl.acris_parties import load_acris_parties
+    from src.nyc_open_data.etl.acris_legals import load_acris_legals
+    from src.nyc_open_data.etl.sales_rolling import load_sales_rolling
 
-    # Sales: only pull since cutoff + 3 day buffer
+    loaders = [
+        ("pluto", load_pluto),
+        ("acris_master", load_acris_master),
+        ("acris_parties", load_acris_parties),
+        ("acris_legals", load_acris_legals),
+    ]
+
+    for name, loader_fn in loaders:
+        log(f"  Refreshing {name}...")
+        ds_start = time.time()
+        try:
+            loader_fn()
+        except Exception as e:
+            raise RuntimeError(f"Extract failed for {name}:\n{e}")
+        log(f"  {name} done ({elapsed(ds_start)})")
+
     days_back = (
         datetime.now(timezone.utc) -
         datetime.strptime(cutoff_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
@@ -120,14 +130,12 @@ def run_extract(cutoff_date: str):
 
     log(f"  Refreshing sales_rolling ({days_back} days back)...")
     ds_start = time.time()
-    result = subprocess.run(
-        [sys.executable, "-c",
-         f"from src.nyc_open_data.etl.sales_rolling import load_sales_rolling; load_sales_rolling(days_back={days_back})"],
-        capture_output=True, text=True
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"sales_rolling failed:\n{result.stderr[-500:]}")
+    try:
+        load_sales_rolling(days_back=days_back)
+    except Exception as e:
+        raise RuntimeError(f"Extract failed for sales_rolling:\n{e}")
     log(f"  sales_rolling done ({elapsed(ds_start)})")
+
     log(f"Extract complete ({elapsed(start)})")
 
 
