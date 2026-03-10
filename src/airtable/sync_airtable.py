@@ -407,7 +407,11 @@ def map_asset_type(db_asset_type: Optional[str]):
 
 
 def fetch_properties(limit: Optional[int] = None, since_date: Optional[str] = None) -> List[dict]:
-    query = """
+    where_clause = ""
+    if since_date:
+        where_clause = f"WHERE sale_date >= '{since_date}'"
+
+    query = f"""
         SELECT
             -- Identity
             address, bbl, borough, block, lot,
@@ -443,9 +447,14 @@ def fetch_properties(limit: Optional[int] = None, since_date: Optional[str] = No
             outlier_flag,
 
             -- Location
-            latitude, longitude
+            latitude, longitude,
+
+            -- Nearest comps (computed by scripts/compute_nearest_comps.py)
+            nearest_comps_proximity,
+            nearest_comps_smart
 
         FROM comps_dev_base_v2
+        {where_clause}
         ORDER BY sale_date DESC
     """
     if limit:
@@ -520,6 +529,10 @@ def map_row_to_airtable_fields(row: dict, area_lookup: Dict[str, str], area_name
         "Latitude":             safe_float(row.get("latitude")),
         "Longitude":            safe_float(row.get("longitude")),
 
+        # Nearest comps (computed by scripts/compute_nearest_comps.py)
+        "Nearest Comps (Proximity)": row.get("nearest_comps_proximity"),
+        "Nearest Comps (Smart)":     row.get("nearest_comps_smart"),
+
         # Meta
         "BSF Type":             "Market Rate",
         "Data Source":          "Auto-Sync",
@@ -560,14 +573,18 @@ def build_existing_map(comps_table) -> Dict[str, str]:
         return {}
 
 
-def sync(limit=None, dry_run=False, since_date=None):
+def sync(limit: Optional[int] = None, dry_run: bool = False, since_date: Optional[str] = None):
     comps_table, areas_table = get_airtable_tables()
 
     print("=" * 70)
-    print("AIRTABLE SYNC (comps_dev_base_v2 -> Property Comps)")
+    print(f"AIRTABLE SYNC (comps_dev_base_v2 -> {AIRTABLE_TABLE_NAME})")
     print("=" * 70)
     print(f"Base:  {AIRTABLE_BASE_ID}")
     print(f"Table: {AIRTABLE_TABLE_NAME}")
+    if since_date:
+        print(f"Since:  {since_date} (incremental)")
+    else:
+        print("Since:  all records (full sync)")
 
     print("Loading Areas...")
     area_lookup, area_names = build_area_cache(areas_table)

@@ -26,7 +26,6 @@ import os
 import sys
 import time
 import subprocess
-import re
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
@@ -38,8 +37,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
-SQL_PATH     = Path(__file__).parent / "src" / "sql" / "incremental_update.sql"
-SYNC_SCRIPT  = Path(__file__).parent / "src" / "airtable" / "sync_airtable.py"
+SQL_PATH      = Path(__file__).parent / "src" / "sql" / "incremental_update.sql"
+SYNC_SCRIPT   = Path(__file__).parent / "src" / "airtable" / "sync_airtable.py"
+COMPS_SCRIPT  = Path(__file__).parent / "scripts" / "compute_nearest_comps.py"
 
 DATASETS_FULL    = ["pluto", "acris_master", "acris_parties", "acris_legals"]
 DEFAULT_DAYS_BACK = 30
@@ -101,41 +101,34 @@ def run_extract(cutoff_date: str):
     log("STEP 1: Refreshing staging data from NYC Open Data", "STEP")
     start = time.time()
 
-    from src.nyc_open_data.etl.pluto import load_pluto
-    from src.nyc_open_data.etl.acris_master import load_acris_master
-    from src.nyc_open_data.etl.acris_parties import load_acris_parties
-    from src.nyc_open_data.etl.acris_legals import load_acris_legals
-    from src.nyc_open_data.etl.sales_rolling import load_sales_rolling
-
-    loaders = [
-        ("pluto", load_pluto),
-        ("acris_master", load_acris_master),
-        ("acris_parties", load_acris_parties),
-        ("acris_legals", load_acris_legals),
-    ]
-
-    for name, loader_fn in loaders:
-        log(f"  Refreshing {name}...")
+    for dataset in DATASETS_FULL:
+        log(f"  Refreshing {dataset}...")
         ds_start = time.time()
-        try:
-            loader_fn()
-        except Exception as e:
-            raise RuntimeError(f"Extract failed for {name}:\n{e}")
-        log(f"  {name} done ({elapsed(ds_start)})")
+        result = subprocess.run(
+            [sys.executable, "scripts/load.py", dataset],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"Extract failed for {dataset}:\n{result.stderr[-500:]}")
+        log(f"  {dataset} done ({elapsed(ds_start)})")
 
-    days_back = (
+    # Sales: pull minimum 180 days to account for NYC DOF publication lag
+    # DOF rolling sales can lag 4-8 weeks, so a tight window misses everything
+    days_back = max(180, (
         datetime.now(timezone.utc) -
         datetime.strptime(cutoff_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-    ).days + 3
+    ).days + 3)
 
     log(f"  Refreshing sales_rolling ({days_back} days back)...")
     ds_start = time.time()
-    try:
-        load_sales_rolling(days_back=days_back)
-    except Exception as e:
-        raise RuntimeError(f"Extract failed for sales_rolling:\n{e}")
+    result = subprocess.run(
+        [sys.executable, "-c",
+         f"from src.nyc_open_data.etl.sales_rolling import load_sales_rolling; load_sales_rolling(days_back={days_back})"],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"sales_rolling failed:\n{result.stderr[-500:]}")
     log(f"  sales_rolling done ({elapsed(ds_start)})")
-
     log(f"Extract complete ({elapsed(start)})")
 
 
@@ -148,18 +141,11 @@ def run_transform(cutoff_date: str) -> int:
     count_before = get_table_count("comps_dev_base_v2")
     log(f"  comps_dev_base_v2 before: {count_before:,}")
 
-    sql = SQL_PATH.read_text().replace(':cutoff_date', f"'{cutoff_date}'")
-    raw_parts = re.split(r';[ \t]*(\n|$)', sql)
-    statements = []
-    for part in raw_parts:
-        part = part.strip()
-        if not part or part == '\n':
-            continue
-        # Strip leading comment lines to find actual SQL
-        lines = [l for l in part.splitlines() if not l.strip().startswith('--')]
-        sql_content = '\n'.join(lines).strip()
-        if sql_content:
-            statements.append(part)                                            
+    sql = SQL_PATH.read_text().replace(":cutoff_date", f"'{cutoff_date}'")
+    statements = [
+        s.strip() for s in sql.split(";")
+        if s.strip() and not s.strip().startswith("--")
+    ]
 
     with get_conn() as conn:
         conn.autocommit = True
@@ -182,6 +168,21 @@ def run_transform(cutoff_date: str) -> int:
     log(f"  comps_dev_base_v2 after: {count_after:,} (+{new_records:,} new)")
     log(f"Transform complete ({elapsed(start)})")
     return new_records
+
+
+# ── Step 2b: Nearest Comps ────────────────────────────────────────────────────
+
+def run_nearest_comps():
+    log("STEP 2b: Computing nearest comps (proximity + smart)", "STEP")
+    start = time.time()
+    result = subprocess.run(
+        [sys.executable, str(COMPS_SCRIPT)],
+        capture_output=False,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError("compute_nearest_comps.py failed")
+    log(f"Nearest comps complete ({elapsed(start)})")
 
 
 # ── Step 3: Airtable Sync ─────────────────────────────────────────────────────
@@ -239,6 +240,9 @@ def main():
 
         current_stage = "transform"
         new_records = run_transform(cutoff_date)
+
+        current_stage = "nearest_comps"
+        run_nearest_comps()
 
         current_stage = "sync"
         if args.skip_sync:
