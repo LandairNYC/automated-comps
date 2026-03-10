@@ -37,9 +37,15 @@ def build_session() -> requests.Session:
 
 def write_dataframe_safe_replace(df: pd.DataFrame, table_name: str, engine: Engine, run_id: str) -> None:
     tmp_table = f"{table_name}__tmp_{run_id.replace('-', '')}"
+    chunk_size = 100_000
 
-    # write temp
-    df.to_sql(tmp_table, engine, if_exists="replace", index=False)
+    # Write to temp table in chunks to avoid Supabase statement timeout on large datasets
+    total = len(df)
+    for i, start in enumerate(range(0, total, chunk_size)):
+        chunk = df.iloc[start:start + chunk_size]
+        mode = "replace" if i == 0 else "append"
+        print(f"[utils] Writing chunk {i+1} ({start+1}–{min(start+chunk_size, total)} of {total})")
+        chunk.to_sql(tmp_table, engine, if_exists=mode, index=False)
 
     # atomic swap
     with engine.begin() as conn:
