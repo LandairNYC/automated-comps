@@ -1,7 +1,7 @@
 -- ============================================================
 -- COMPSCOPE PIPELINE REBUILD SQL
 -- Order: pluto_clean → sales_clean → acris_clean →
---        comps_base → comps_enriched → comps_dev_base_v2
+--        comps_base → comps_enriched → comps_dev_base_v3_staging
 -- ============================================================
 
 -- ============================================================
@@ -46,6 +46,8 @@ SELECT
 FROM stg_pluto_raw
 WHERE borough IS NOT NULL;
 
+--SPLIT--
+
 -- ============================================================
 -- STEP 2: Rebuild sales_clean
 -- ============================================================
@@ -80,8 +82,10 @@ WHERE sale_price IS NOT NULL
   AND sale_price != '0'
   AND sale_price != '';
 
+--SPLIT--
+
 -- ============================================================
--- STEP 3: Rebuild ACRIS clean tables
+-- STEP 3a: Rebuild acris_master_clean
 -- ============================================================
 DROP TABLE IF EXISTS acris_master_clean CASCADE;
 CREATE TABLE acris_master_clean AS
@@ -89,19 +93,24 @@ SELECT
     document_id,
     record_type,
     crfn,
-    CASE WHEN borough ~ '^[0-9]+$' THEN borough::integer END as borough,
+    CASE WHEN recorded_borough ~ '^[0-9]+$' THEN recorded_borough::integer END as borough,
     doc_type,
     document_date::timestamp as document_date,
-    CASE WHEN doc_amount ~ '^[0-9\.]+$' THEN doc_amount::numeric END as doc_amount,
+    CASE WHEN document_amt ~ '^[0-9\.]+$' THEN document_amt::numeric END as doc_amount,
     recorded_datetime::timestamp as recorded_datetime,
     modified_date::timestamp as modified_date,
     reel_yr,
     reel_nbr,
     reel_pg,
-    pct_transferred
+    percent_trans as pct_transferred
 FROM stg_acris_master
 WHERE document_id IS NOT NULL;
 
+--SPLIT--
+
+-- ============================================================
+-- STEP 3b: Rebuild acris_parties_clean
+-- ============================================================
 DROP TABLE IF EXISTS acris_parties_clean CASCADE;
 CREATE TABLE acris_parties_clean AS
 SELECT
@@ -119,13 +128,17 @@ SELECT
     city,
     state,
     zip,
-    country,
-    addr_unit
+    country
 FROM stg_acris_parties
 WHERE document_id IS NOT NULL
   AND name IS NOT NULL
   AND TRIM(name) != '';
 
+--SPLIT--
+
+-- ============================================================
+-- STEP 3c: Rebuild acris_legals_clean
+-- ============================================================
 DROP TABLE IF EXISTS acris_legals_clean CASCADE;
 CREATE TABLE acris_legals_clean AS
 SELECT
@@ -144,62 +157,68 @@ SELECT
 FROM stg_acris_legals
 WHERE document_id IS NOT NULL;
 
+--SPLIT--
+
 -- ============================================================
 -- STEP 4: Rebuild zoning_far_official (idempotent)
 -- ============================================================
 DROP TABLE IF EXISTS zoning_far_official CASCADE;
 CREATE TABLE zoning_far_official (
-    zoning_base TEXT PRIMARY KEY,
-    far_narrow NUMERIC NOT NULL,
-    far_wide NUMERIC NOT NULL,
-    notes TEXT
+    zoning_base  TEXT    PRIMARY KEY,
+    base_far     NUMERIC NOT NULL,
+    uap_far      NUMERIC NOT NULL,
+    notes        TEXT
 );
-INSERT INTO zoning_far_official (zoning_base, far_narrow, far_wide, notes) VALUES
-('R5',   1.25, 1.25,  'R5 standard'),
-('R5B',  1.35, 1.35,  'R5B contextual'),
-('R5D',  2.0,  2.0,   'R5D contextual'),
-('R6',   2.2,  3.0,   'R6: NS=2.2, WS=3.0'),
-('R6A',  2.7,  3.6,   'R6A: Base=2.7, Incl=3.6'),
-('R6B',  2.0,  2.2,   'R6B: Base=2.0, Incl=2.2'),
-('R6D',  3.0,  4.0,   'R6D contextual'),
-('R7',   3.44, 4.0,   'R7: NS=3.44, WS=4.0'),
-('R7-1', 2.0,  3.0,   'R7-1 contextual'),
-('R7-2', 2.7,  4.6,   'R7-2: Base NS=2.7, Incl WS=4.6'),
-('R7A',  3.45, 4.6,   'R7A: Base=3.45, Incl=4.6'),
-('R7B',  3.0,  4.0,   'R7B contextual'),
-('R7D',  4.2,  5.6,   'R7D: Base=4.2, Incl=5.6'),
-('R7X',  3.75, 6.0,   'R7X: Base=3.75, Incl=6.0'),
-('R8',   5.4,  7.2,   'R8: Base=5.4, Incl=7.2'),
-('R8A',  5.4,  7.2,   'R8A: Base=5.4, Incl=7.2'),
-('R8B',  5.4,  7.2,   'R8B: Same as R8A'),
-('R8X',  6.0,  7.2,   'R8X: Higher density'),
-('R9',   7.52, 8.0,   'R9: Standard=7.52, Incl=8.0'),
-('R9-1', 7.52, 8.0,   'R9-1 variant'),
-('R9A',  7.52, 8.5,   'R9A: Standard=7.52, Incl=8.5'),
-('R9D',  7.52, 8.0,   'R9D'),
-('R9X',  7.52, 8.0,   'R9X'),
-('R10',  10.0, 12.0,  'R10: Base=10.0, Incl=12.0'),
-('R10A', 10.0, 12.0,  'R10A contextual'),
-('R10H', 10.0, 12.0,  'R10H: High density'),
-('R10X', 10.0, 12.0,  'R10X contextual'),
-('R11',  12.0, 15.0,  'R11: City of Yes 2025'),
-('R12',  15.0, 18.0,  'R12: City of Yes 2025'),
-('M1-1', 1.0,  1.0,   'M1-1 light mfg'),
-('M1-2', 2.0,  2.0,   'M1-2 light mfg'),
-('M1-3', 5.0,  5.0,   'M1-3 light mfg'),
-('M1-4', 2.0,  2.0,   'M1-4 light mfg'),
-('M1-5', 5.0,  5.0,   'M1-5 light mfg'),
-('M1-6', 10.0, 10.0,  'M1-6 light mfg'),
-('M1-8', 2.0,  2.0,   'M1-8 variant'),
-('M1-9', 2.0,  2.0,   'M1-9 variant'),
-('M2-1', 2.0,  2.0,   'M2-1 heavy mfg'),
-('M2-2', 5.0,  5.0,   'M2-2 heavy mfg'),
-('M2-3', 2.0,  2.0,   'M2-3 heavy mfg'),
-('M2-4', 5.0,  5.0,   'M2-4 heavy mfg'),
-('M3-1', 2.0,  2.0,   'M3-1 heavy mfg'),
-('M3-2', 2.0,  2.0,   'M3-2 heavy mfg');
+INSERT INTO zoning_far_official (zoning_base, base_far, uap_far, notes) VALUES
+('R5',   1.5,  2.0,   'R5: Base=1.5, UAP=2.0. NS/WS not applicable.'),
+('R5B',  1.5,  2.0,   'R5B: Base=1.5, UAP=2.0. NS/WS not applicable.'),
+('R5D',  2.0,  2.0,   'R5D: Base=2.0, UAP=2.0.'),
+('R6',   2.2,  3.9,   'R6: Base NS=2.2, Base WS=3.0, UAP=3.9'),
+('R6-1', 3.0,  3.9,   'R6-1: Base=3.0, UAP=3.9'),
+('R6-2', 2.5,  3.0,   'R6-2: Base=2.5, UAP=3.0'),
+('R6A',  3.0,  3.9,   'R6A: Base=3.0, UAP=3.9'),
+('R6B',  2.0,  2.4,   'R6B: Base=2.0, UAP=2.4'),
+('R6D',  2.5,  3.0,   'R6D: Base=2.5, UAP=3.0'),
+('R7',   3.44, 5.01,  'R7: Base NS=3.44, Base WS=4.0, UAP=5.01'),
+('R7-1', 3.44, 5.01,  'R7-1: Base NS=3.44, Base WS=4.0, UAP=5.01'),
+('R7-2', 3.44, 4.0,   'R7-2: Base NS=3.44, Base WS=4.0 per Alex Goulet'),
+('R7A',  4.0,  5.01,  'R7A: Base=4.0, UAP=5.01'),
+('R7B',  3.0,  3.9,   'R7B: Base=3.0, UAP=3.9'),
+('R7D',  4.66, 5.6,   'R7D: Base=4.66, UAP=5.6'),
+('R7X',  5.0,  6.0,   'R7X: Base=5.0, UAP=6.0'),
+('R8',   6.02, 7.2,   'R8: Base NS=6.02, Base WS=7.2, UAP=7.2'),
+('R8A',  6.02, 7.2,   'R8A: Base=6.02, UAP=7.2'),
+('R8B',  4.0,  4.8,   'R8B: Base=4.0, UAP=4.8'),
+('R8X',  6.02, 7.2,   'R8X: Base=6.02, UAP=7.2'),
+('R9',   7.52, 9.02,  'R9: Base=7.52, UAP=9.02'),
+('R9-1', 7.52, 9.02,  'R9-1: Base=7.52, UAP=9.02'),
+('R9A',  7.52, 9.02,  'R9A: Base=7.52, UAP=9.02'),
+('R9D',  9.0,  10.8,  'R9D: Base=9.0, UAP=10.8'),
+('R9X',  9.0,  10.8,  'R9X: Base=9.0, UAP=10.8'),
+('R10',  10.0, 12.0,  'R10: Base=10.0, UAP=12.0'),
+('R10A', 10.0, 12.0,  'R10A: Base=10.0, UAP=12.0'),
+('R10H', 10.0, 12.0,  'R10H: Base=10.0, UAP=12.0'),
+('R10X', 10.0, 12.0,  'R10X: Base=10.0, UAP=12.0'),
+('R11',  12.5, 15.0,  'R11: Base=12.5, UAP=15.0'),
+('R12',  15.0, 18.0,  'R12: Base=15.0, UAP=18.0'),
+('M1-1', 1.0,  1.0,   'M1-1 light mfg. No UAP.'),
+('M1-2', 2.0,  2.0,   'M1-2 light mfg. No UAP.'),
+('M1-3', 5.0,  5.0,   'M1-3 light mfg. No UAP.'),
+('M1-4', 2.0,  2.0,   'M1-4 light mfg. No UAP.'),
+('M1-5', 5.0,  5.0,   'M1-5 light mfg. No UAP.'),
+('M1-6', 10.0, 10.0,  'M1-6 light mfg. No UAP.'),
+('M1-8', 2.0,  2.0,   'M1-8 variant. No UAP.'),
+('M1-9', 2.0,  2.0,   'M1-9 variant. No UAP.'),
+('M2-1', 2.0,  2.0,   'M2-1 heavy mfg. No UAP.'),
+('M2-2', 5.0,  5.0,   'M2-2 heavy mfg. No UAP.'),
+('M2-3', 2.0,  2.0,   'M2-3 heavy mfg. No UAP.'),
+('M2-4', 5.0,  5.0,   'M2-4 heavy mfg. No UAP.'),
+('M3-1', 2.0,  2.0,   'M3-1 heavy mfg. No UAP.'),
+('M3-2', 2.0,  2.0,   'M3-2 heavy mfg. No UAP.');
 
 CREATE INDEX idx_zoning_far ON zoning_far_official(zoning_base);
+
+--SPLIT--
 
 -- ============================================================
 -- STEP 5: Rebuild comps_base (Sales + PLUTO join)
@@ -246,6 +265,8 @@ CREATE INDEX idx_comps_base_bbl ON comps_base(borough, block, lot);
 CREATE INDEX idx_comps_base_date ON comps_base(sale_date);
 CREATE INDEX idx_comps_base_zoning ON comps_base(zoning);
 
+--SPLIT--
+
 -- ============================================================
 -- STEP 6: Rebuild comps_enriched (add buyers, sellers, FAR, buildable SF)
 -- ============================================================
@@ -288,7 +309,7 @@ base_zoning_extract AS (
     SELECT
         c.*,
         CASE
-            WHEN c.zoning ~ '/R[0-9]+'   THEN 'R' || SUBSTRING(c.zoning FROM '/R([0-9]+)')
+            WHEN c.zoning ~ '/R[0-9]+'        THEN 'R' || SUBSTRING(c.zoning FROM '/R([0-9]+)')
             WHEN c.zoning ~ '^M[0-9]-[0-9]+A' THEN SUBSTRING(c.zoning FROM '^M[0-9]-[0-9]+')
             WHEN c.zoning ~ '^R[0-9]+-[0-9]'  THEN SUBSTRING(c.zoning FROM '^R[0-9]+-[0-9]')
             WHEN c.zoning ~ '^R[0-9]+[A-Z]'   THEN SUBSTRING(c.zoning FROM '^R[0-9]+[A-Z]')
@@ -307,26 +328,22 @@ SELECT
     d.days_diff,
     b.buyer_names,
     s.seller_names,
-    c.zoning_base,
-    z.far_narrow as official_far_narrow,
-    z.far_wide as official_far_wide,
+    z.base_far as official_base_far,
+    z.uap_far  as official_uap_far,
     CASE WHEN c.lotarea > 0 THEN c.sale_price_clean / c.lotarea END as price_per_land_sf,
     CASE WHEN c.bldgarea > 0 THEN c.sale_price_clean / c.bldgarea END as price_per_bldg_sf,
-    -- Buildable SF (narrow = conservative, used as primary)
-    CASE WHEN c.lotarea > 0 AND z.far_narrow > 0 THEN c.lotarea * z.far_narrow END as buildable_sf_narrow,
-    CASE WHEN c.lotarea > 0 AND z.far_wide > 0   THEN c.lotarea * z.far_wide   END as buildable_sf_wide,
-    -- PPBSF using narrow FAR
-    CASE WHEN c.lotarea > 0 AND z.far_narrow > 0
-         THEN c.sale_price_clean / (c.lotarea * z.far_narrow) END as price_per_buildable_sf,
-    -- Asset type (pre-classification, will be overridden in dev_base step)
+    CASE WHEN c.lotarea > 0 AND z.base_far > 0 THEN c.lotarea * z.base_far END as buildable_sf_base,
+    CASE WHEN c.lotarea > 0 AND z.uap_far  > 0 THEN c.lotarea * z.uap_far  END as buildable_sf_uap,
+    CASE WHEN c.lotarea > 0 AND z.base_far > 0
+        THEN c.sale_price_clean / (c.lotarea * z.base_far) END as price_per_buildable_sf,
     CASE
-        WHEN c.num_buildings = 0 OR c.bldgarea = 0                          THEN 'Vacant Land'
+        WHEN c.num_buildings = 0 OR c.bldgarea = 0                                  THEN 'Vacant Land'
         WHEN c.zoning LIKE 'M%' AND c.building_class IN ('F1','F2','F4','F8','F9') THEN 'Industrial Building'
-        WHEN c.zoning LIKE 'M%'                                              THEN 'Industrial Development Site'
-        WHEN c.zoning LIKE 'R%' AND c.lotarea >= c.bldgarea                 THEN 'Residential Development Site'
-        WHEN c.zoning LIKE 'R%'                                              THEN 'Residential Property'
-        WHEN c.zoning LIKE 'C%' AND c.lotarea >= c.bldgarea                 THEN 'Residential Development Site'
-        WHEN c.zoning LIKE 'C%'                                              THEN 'Residential Property'
+        WHEN c.zoning LIKE 'M%'                                                      THEN 'Industrial Development Site'
+        WHEN c.zoning LIKE 'R%' AND c.lotarea >= c.bldgarea                         THEN 'Residential Development Site'
+        WHEN c.zoning LIKE 'R%'                                                      THEN 'Residential Property'
+        WHEN c.zoning LIKE 'C%' AND c.lotarea >= c.bldgarea                         THEN 'Residential Development Site'
+        WHEN c.zoning LIKE 'C%'                                                      THEN 'Residential Property'
         ELSE 'Mixed-Use Site'
     END as asset_type
 FROM base_zoning_extract c
@@ -343,25 +360,22 @@ CREATE INDEX idx_comps_enriched_building_class ON comps_enriched(building_class)
 CREATE INDEX idx_comps_enriched_price ON comps_enriched(sale_price_clean);
 CREATE INDEX idx_comps_enriched_asset_type ON comps_enriched(asset_type);
 
+--SPLIT--
+
 -- ============================================================
--- STEP 7: Rebuild comps_dev_base_v2 (final filtered dev sites)
+-- STEP 7: Build comps_dev_base_v3_staging (safe — does NOT touch production)
 -- ============================================================
-DROP TABLE IF EXISTS comps_dev_base_v2 CASCADE;
-CREATE TABLE comps_dev_base_v2 AS
+DROP TABLE IF EXISTS comps_dev_base_v3_staging CASCADE;
+CREATE TABLE comps_dev_base_v3_staging AS
 WITH filtered_comps AS (
     SELECT
         *,
-        -- Use narrow buildable SF as primary
-        buildable_sf_narrow as buildable_sf,
-        pluto_resid_far,
-        pluto_comm_far,
-        -- Development potential score
+        buildable_sf_base as buildable_sf,
         CASE
             WHEN lotarea >= bldgarea THEN 100
             WHEN bldgarea = 0        THEN 100
             ELSE ROUND(100.0 * (lotarea - bldgarea) / lotarea, 0)
         END as development_potential_score,
-        -- Portfolio detection
         CASE
             WHEN seller_names IS NOT NULL AND EXISTS (
                 SELECT 1 FROM comps_enriched c2
@@ -387,7 +401,6 @@ WITH filtered_comps AS (
                 HAVING COUNT(*) >= 3
             ) THEN true ELSE false
         END as is_portfolio,
-        -- Deduplication
         ROW_NUMBER() OVER (
             PARTITION BY address, sale_date
             ORDER BY sale_price_clean DESC, lotarea DESC
@@ -395,17 +408,27 @@ WITH filtered_comps AS (
     FROM comps_enriched
     WHERE
         sale_date >= '2022-01-01'
-        AND sale_date < '2026-01-01'
+        AND sale_date < '2026-12-31'
         AND sale_price_clean >= 100000
-        AND sale_price_clean <= 20000000
-        AND (zoning LIKE 'R%' OR zoning LIKE 'M%')
-        AND building_class NOT IN ('D0','D1','D2','D3','D4','D5','D6','D7','D8','D9')
-        AND building_class NOT LIKE 'R%'
-        AND building_class != 'C6'
+        AND zoning NOT LIKE 'C8%'
+        AND zoning NOT LIKE 'R3%'
+        AND zoning NOT LIKE 'R4%'
+        AND zoning NOT SIMILAR TO 'R5[^BD]%'
+        AND zoning_base != 'R5'
         AND (
-            (zoning ~ '^R[3-5]' AND lotarea >= 4975)
-            OR (zoning ~ '^R([5-9]|10|11|12)' AND (lotarea >= bldgarea OR lotarea >= 2500))
-            OR (zoning ~ '^M[1-3]')
+            zoning_base IN ('R5B', 'R5D')
+            OR zoning_base ~ '^R([6-9]|10|11|12)'
+            OR zoning_base ~ '^M[1-3]'
+            OR zoning      ~ '^M[1-3]'
+            OR (zoning LIKE 'C%' AND zoning_base ~ '^R([6-9]|10|11|12)')
+        )
+        AND building_class NOT IN ('D0','D1','D2','D3','D4','D5','D6','D7','D8','D9','C6')
+        AND building_class NOT LIKE 'R%'
+        AND (
+            (zoning_base ~ '^R([6-9]|10|11|12)' AND lotarea >= 1500)
+            OR (zoning_base IN ('R5B','R5D')     AND lotarea >= 2000)
+            OR (zoning_base ~ '^M'               AND lotarea >= 2000)
+            OR lotarea >= 2000
         )
         AND (
             buyer_names IS NULL
@@ -421,8 +444,7 @@ WITH filtered_comps AS (
         AND (sale_price_clean / NULLIF(lotarea, 0)) <= 2000
         AND lotarea IS NOT NULL
         AND lotarea > 0
-        AND pluto_resid_far IS NOT NULL
-        AND pluto_resid_far > 0
+        AND (pluto_resid_far IS NULL OR pluto_resid_far > 0)
 )
 SELECT
     borough, block, lot,
@@ -438,8 +460,8 @@ SELECT
     buyer_names, seller_names,
     pluto_resid_far, pluto_comm_far,
     buildable_sf,
-    buildable_sf_narrow, buildable_sf_wide,
-    official_far_narrow, official_far_wide,
+    buildable_sf_base, buildable_sf_uap,
+    official_base_far, official_uap_far,
     price_per_land_sf, price_per_bldg_sf, price_per_buildable_sf,
     asset_type,
     development_potential_score,
@@ -447,22 +469,20 @@ SELECT
 FROM filtered_comps
 WHERE rn = 1;
 
--- Apply Dev Site override rule
-UPDATE comps_dev_base_v2
+UPDATE comps_dev_base_v3_staging
 SET asset_type = 'Development Site'
 WHERE buildable_sf >= 2 * bldgarea
   AND bldgarea > 0
   AND unitsres < 6
   AND asset_type != 'Development Site';
 
--- Rename legacy asset type
-UPDATE comps_dev_base_v2
+UPDATE comps_dev_base_v3_staging
 SET asset_type = 'Development Site'
 WHERE asset_type = 'Residential Development Site';
 
-CREATE INDEX idx_devv2_bbl ON comps_dev_base_v2(borough, block, lot);
-CREATE INDEX idx_devv2_date ON comps_dev_base_v2(sale_date);
-CREATE INDEX idx_devv2_zoning ON comps_dev_base_v2(zoning);
-CREATE INDEX idx_devv2_price ON comps_dev_base_v2(sale_price_clean);
-CREATE INDEX idx_devv2_asset ON comps_dev_base_v2(asset_type);
-CREATE INDEX idx_devv2_neighborhood ON comps_dev_base_v2(neighborhood);
+CREATE INDEX idx_staging_bbl ON comps_dev_base_v3_staging(borough, block, lot);
+CREATE INDEX idx_staging_date ON comps_dev_base_v3_staging(sale_date);
+CREATE INDEX idx_staging_zoning ON comps_dev_base_v3_staging(zoning);
+CREATE INDEX idx_staging_price ON comps_dev_base_v3_staging(sale_price_clean);
+CREATE INDEX idx_staging_asset ON comps_dev_base_v3_staging(asset_type);
+CREATE INDEX idx_staging_neighborhood ON comps_dev_base_v3_staging(neighborhood);
