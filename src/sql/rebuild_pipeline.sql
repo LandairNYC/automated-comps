@@ -450,7 +450,8 @@ SELECT
     borough, block, lot,
     sale_price_clean, sale_date,
     address, neighborhood, zip_code,
-    zoning, zoning_base, building_class, landuse,
+    zoning, zoning_base, building_class,
+    bcl.building_class_name, landuse,
     lotarea, bldgarea, comarea, resarea,
     lot_frontage, lot_depth,
     num_buildings, unitsres, unitstotal, numfloors,
@@ -466,8 +467,9 @@ SELECT
     asset_type,
     development_potential_score,
     portfolio_flag, is_portfolio
-FROM filtered_comps
-WHERE rn = 1;
+FROM filtered_comps f
+LEFT JOIN building_class_lookup bcl ON f.building_class = bcl.building_class
+WHERE f.rn = 1;
 
 UPDATE comps_dev_base_v3_staging
 SET asset_type = 'Development Site'
