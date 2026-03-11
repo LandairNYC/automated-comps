@@ -216,22 +216,26 @@ filtered AS (
         e.sale_date >= '2022-01-01'
         AND e.sale_date < '2026-12-31'
         AND e.sale_price_clean >= 100000
-        AND e.sale_price_clean <= 20000000
         AND e.zoning NOT LIKE 'C8%'
         AND e.zoning NOT LIKE 'R3%'
         AND e.zoning NOT LIKE 'R4%'
         AND e.zoning NOT SIMILAR TO 'R5[^BD]%'
+        AND e.zoning_base != 'R5'
         AND (
-            e.zoning IN ('R5B','R5D')
-            OR e.zoning ~ '^R([6-9]|10|11|12)'
-            OR e.zoning ~ '^M[1-3]'
+            e.zoning_base IN ('R5B', 'R5D')
+            OR e.zoning_base ~ '^R([6-9]|10|11|12)'
+            OR e.zoning_base ~ '^M[1-3]'
+            OR e.zoning      ~ '^M[1-3]'
             OR (e.zoning LIKE 'C%' AND e.zoning_base ~ '^R([6-9]|10|11|12)')
-            OR e.zoning ~ '/R([6-9]|10|11|12)'
         )
         AND e.building_class NOT IN ('D0','D1','D2','D3','D4','D5','D6','D7','D8','D9','C6')
         AND e.building_class NOT LIKE 'R%'
-        AND e.lotarea >= 2000
-        AND (e.zoning !~ '^R([5-9]|10|11|12)' OR e.lotarea >= 5000)
+        AND (
+            (e.zoning_base ~ '^R([6-9]|10|11|12)' AND e.lotarea >= 1500)
+            OR (e.zoning_base IN ('R5B','R5D')     AND e.lotarea >= 2000)
+            OR (e.zoning_base ~ '^M'               AND e.lotarea >= 2000)
+            OR e.lotarea >= 2000
+        )
         AND (
             e.unitsres <= 5
             OR (e.lotarea * e.pluto_resid_far) >= (2 * e.bldgarea)
