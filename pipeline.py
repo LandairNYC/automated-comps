@@ -142,10 +142,19 @@ def run_transform(cutoff_date: str) -> int:
     log(f"  comps_dev_base_v2 before: {count_before:,}")
 
     sql = SQL_PATH.read_text().replace(":cutoff_date", f"'{cutoff_date}'")
-    statements = [
-        s.strip() for s in sql.split(";")
-        if s.strip() and not s.strip().startswith("--")
-    ]
+
+    # Split on --SPLIT-- markers (avoids breaking on semicolons inside SQL strings)
+    raw_parts = sql.split("--SPLIT--")
+    statements = []
+    for part in raw_parts:
+        part = part.strip()
+        if not part:
+            continue
+        if part.endswith(";"):
+            part = part[:-1].strip()
+        lines = [l for l in part.splitlines() if l.strip() and not l.strip().startswith("--")]
+        if lines:
+            statements.append(part)
 
     with get_conn() as conn:
         conn.autocommit = True
@@ -215,6 +224,8 @@ def main():
     parser.add_argument("--limit",        type=int, default=None)
     parser.add_argument("--notify",       action="store_true",
                         help="Send Slack notification")
+    parser.add_argument("--rebuild",      action="store_true",
+                        help="Run full rebuild into comps_dev_base_v3_staging")
     args = parser.parse_args()
 
     pipeline_start = time.time()
@@ -232,6 +243,50 @@ def main():
     print()
 
     try:
+        if args.rebuild:
+            current_stage = "rebuild"
+            log("STEP 1: Full rebuild into comps_dev_base_v3_staging", "STEP")
+            rebuild_sql = (Path(__file__).parent / "src" / "sql" / "rebuild_pipeline.sql").read_text()
+            raw_parts = rebuild_sql.split("--SPLIT--")
+            statements = []
+            for part in raw_parts:
+                part = part.strip()
+                if not part:
+                    continue
+                lines = [l for l in part.splitlines() if l.strip() and not l.strip().startswith("--")]
+                if lines:
+                    statements.append(part)
+
+            log(f"  Loaded {len(statements)} statements from rebuild SQL")
+
+            for i, stmt in enumerate(statements):
+                first_line = next(
+                    (l.strip() for l in stmt.splitlines()
+                     if l.strip() and not l.strip().startswith("--")),
+                    stmt[:60]
+                )
+                log(f"  [{i+1}/{len(statements)}] {first_line[:80]}")
+                stmt_start = time.time()
+                try:
+                    # Fresh connection per statement — avoids Supabase timeout killing the run
+                    conn = get_conn()
+                    conn.autocommit = True
+                    with conn.cursor() as cur:
+                        cur.execute("SET statement_timeout = '30min'")
+                        cur.execute(stmt)
+                    conn.close()
+                    log(f"    ✓ done ({elapsed(stmt_start)})")
+                except Exception as e:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    log(f"  SQL error on statement {i+1}: {e}", "ERROR")
+                    raise
+
+            log("Rebuild complete — validate comps_dev_base_v3_staging before swapping")
+            return
+
         current_stage = "extract"
         if args.skip_extract:
             log("Skipping extract (--skip-extract)", "WARN")
