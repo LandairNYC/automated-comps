@@ -321,6 +321,35 @@ FROM filtered f
 LEFT JOIN portfolio_docs p ON f.document_id = p.document_id
 LEFT JOIN building_class_lookup bcl ON f.building_class = bcl.building_class
 WHERE f.rn = 1;
+
+-- Tag sliver lot outliers on newly inserted records
+UPDATE comps_dev_base_v2
+SET outlier_flag = 'Sliver Lot - Review PPBSF'
+WHERE outlier_flag IS NULL
+  AND lot_frontage < 25
+  AND (
+      zoning_base ~ '^R(7|8|9|10|11|12)'
+      OR zoning   ~ '^R(7|8|9|10|11|12)'
+      OR zoning   ~ '/R(7|8|9|10|11|12)'
+  );
+
+-- Tag portfolio sales on newly inserted records
+UPDATE comps_dev_base_v2 v
+SET is_portfolio = true,
+    portfolio_flag = CASE
+        WHEN p.parcel_count >= 5 THEN 'Package Sale (5+ parcels) - Manual Review Required'
+        WHEN p.parcel_count >= 3 THEN 'Package Sale (3-4 parcels) - Verify Before Using'
+        ELSE 'Package Sale (2 parcels)'
+    END
+FROM (
+    SELECT document_id, COUNT(*) as parcel_count
+    FROM comps_dev_base_v2
+    WHERE document_id IS NOT NULL
+    GROUP BY document_id
+    HAVING COUNT(*) >= 2
+) p
+WHERE v.document_id = p.document_id
+  AND v.is_portfolio = false;
 --SPLIT--
 
 

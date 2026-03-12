@@ -145,21 +145,39 @@ def fetch_all_records(conn) -> List[dict]:
 
 
 def write_results(conn, results: List[dict]):
-    """Bulk update nearest_comps fields."""
-    with conn.cursor() as cur:
-        for row in results:
-            cur.execute("""
-                UPDATE comps_dev_base_v2
-                SET nearest_comps_proximity = %s,
-                    nearest_comps_smart     = %s
-                WHERE bbl = %s
-            """, (
-                row["nearest_comps_proximity"],
-                row["nearest_comps_smart"],
-                row["bbl"],
-            ))
-    conn.commit()
-    print(f"✅  Wrote nearest comps for {len(results)} records")
+    """Bulk update nearest_comps fields in batches with reconnect."""
+    BATCH_SIZE = 500
+    total = len(results)
+    written = 0
+
+    for i in range(0, total, BATCH_SIZE):
+        batch = results[i:i + BATCH_SIZE]
+        # Fresh connection per batch
+        batch_conn = get_connection()
+        batch_conn.autocommit = False
+        try:
+            with batch_conn.cursor() as cur:
+                for row in batch:
+                    cur.execute("""
+                        UPDATE comps_dev_base_v2
+                        SET nearest_comps_proximity = %s,
+                            nearest_comps_smart     = %s
+                        WHERE bbl = %s
+                    """, (
+                        row["nearest_comps_proximity"],
+                        row["nearest_comps_smart"],
+                        row["bbl"],
+                    ))
+            batch_conn.commit()
+            written += len(batch)
+            print(f"  Wrote {written}/{total} records...")
+        except Exception as e:
+            batch_conn.rollback()
+            raise
+        finally:
+            batch_conn.close()
+
+    print(f"✅  Wrote nearest comps for {written} records")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
