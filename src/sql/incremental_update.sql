@@ -142,13 +142,15 @@ sellers_agg AS (
 base_zoning_extract AS (
     SELECT c.*,
         CASE
-            WHEN c.zoning ~ '/R[0-9]+'        THEN 'R' || SUBSTRING(c.zoning FROM '/R([0-9]+)')
-            WHEN c.zoning ~ '^M[0-9]-[0-9]+A' THEN SUBSTRING(c.zoning FROM '^M[0-9]-[0-9]+')
-            WHEN c.zoning ~ '^R[0-9]+-[0-9]'  THEN SUBSTRING(c.zoning FROM '^R[0-9]+-[0-9]')
-            WHEN c.zoning ~ '^R[0-9]+[A-Z]'   THEN SUBSTRING(c.zoning FROM '^R[0-9]+[A-Z]')
-            WHEN c.zoning ~ '^R[0-9]+'         THEN SUBSTRING(c.zoning FROM '^R[0-9]+')
-            WHEN c.zoning ~ '^M[0-9]-[0-9]+'   THEN SUBSTRING(c.zoning FROM '^M[0-9]-[0-9]+')
-            WHEN c.zoning ~ '^M[0-9]'          THEN SUBSTRING(c.zoning FROM '^M[0-9]')
+            WHEN c.zoning ~ '^M[0-9]+-[0-9]+D/R[0-9]+'  THEN 'R' || SUBSTRING(c.zoning FROM '/R([0-9A-Z\-]+)')
+            WHEN c.zoning ~ '/R[0-9]+'                    THEN 'R' || SUBSTRING(c.zoning FROM '/R([0-9A-Z\-]+)')
+            WHEN c.zoning ~ '^M[0-9]+-?[0-9]*D$'         THEN SUBSTRING(c.zoning FROM '^M[0-9]+-?[0-9]*')
+            WHEN c.zoning ~ '^M[0-9]-[0-9]+A'            THEN SUBSTRING(c.zoning FROM '^M[0-9]-[0-9]+')
+            WHEN c.zoning ~ '^R[0-9]+-[0-9]'             THEN SUBSTRING(c.zoning FROM '^R[0-9]+-[0-9]')
+            WHEN c.zoning ~ '^R[0-9]+[A-Z]'              THEN SUBSTRING(c.zoning FROM '^R[0-9]+[A-Z]')
+            WHEN c.zoning ~ '^R[0-9]+'                    THEN SUBSTRING(c.zoning FROM '^R[0-9]+')
+            WHEN c.zoning ~ '^M[0-9]-[0-9]+'             THEN SUBSTRING(c.zoning FROM '^M[0-9]-[0-9]+')
+            WHEN c.zoning ~ '^M[0-9]'                    THEN SUBSTRING(c.zoning FROM '^M[0-9]')
             ELSE NULL
         END as zoning_base
     FROM new_comps_base c
@@ -266,14 +268,14 @@ SELECT
     bcl.building_class_name,
     f.landuse,
     CASE
-        WHEN f.building_class LIKE 'V%' OR f.bldgarea = 0 OR f.num_buildings = 0
-            THEN 'Vacant Land'
         WHEN f.building_class = 'K4'
             THEN 'Retail Building'
         WHEN (f.zoning ~ 'R' OR f.zoning_base ~ '^R')
             THEN CASE
-                WHEN f.buildable_sf IS NOT NULL AND f.bldgarea > 0
-                     AND f.buildable_sf >= (2 * f.bldgarea)
+                WHEN f.building_class LIKE 'V%'
+                     OR f.bldgarea = 0
+                     OR f.num_buildings = 0
+                     OR (f.buildable_sf IS NOT NULL AND f.buildable_sf >= (2 * f.bldgarea))
                     THEN 'Development Site'
                 ELSE 'Residential Property'
             END

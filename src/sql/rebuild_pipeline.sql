@@ -306,16 +306,17 @@ sellers_agg AS (
     GROUP BY document_id
 ),
 base_zoning_extract AS (
-    SELECT
-        c.*,
+    SELECT c.*,
         CASE
-            WHEN c.zoning ~ '/R[0-9]+'        THEN 'R' || SUBSTRING(c.zoning FROM '/R([0-9]+)')
-            WHEN c.zoning ~ '^M[0-9]-[0-9]+A' THEN SUBSTRING(c.zoning FROM '^M[0-9]-[0-9]+')
-            WHEN c.zoning ~ '^R[0-9]+-[0-9]'  THEN SUBSTRING(c.zoning FROM '^R[0-9]+-[0-9]')
-            WHEN c.zoning ~ '^R[0-9]+[A-Z]'   THEN SUBSTRING(c.zoning FROM '^R[0-9]+[A-Z]')
-            WHEN c.zoning ~ '^R[0-9]+'         THEN SUBSTRING(c.zoning FROM '^R[0-9]+')
-            WHEN c.zoning ~ '^M[0-9]-[0-9]+'   THEN SUBSTRING(c.zoning FROM '^M[0-9]-[0-9]+')
-            WHEN c.zoning ~ '^M[0-9]'          THEN SUBSTRING(c.zoning FROM '^M[0-9]')
+            WHEN c.zoning ~ '^M[0-9]+-[0-9]+D/R[0-9]+'  THEN 'R' || SUBSTRING(c.zoning FROM '/R([0-9A-Z\-]+)')
+            WHEN c.zoning ~ '/R[0-9]+'                    THEN 'R' || SUBSTRING(c.zoning FROM '/R([0-9A-Z\-]+)')
+            WHEN c.zoning ~ '^M[0-9]+-?[0-9]*D$'         THEN SUBSTRING(c.zoning FROM '^M[0-9]+-?[0-9]*')
+            WHEN c.zoning ~ '^M[0-9]-[0-9]+A'            THEN SUBSTRING(c.zoning FROM '^M[0-9]-[0-9]+')
+            WHEN c.zoning ~ '^R[0-9]+-[0-9]'             THEN SUBSTRING(c.zoning FROM '^R[0-9]+-[0-9]')
+            WHEN c.zoning ~ '^R[0-9]+[A-Z]'              THEN SUBSTRING(c.zoning FROM '^R[0-9]+[A-Z]')
+            WHEN c.zoning ~ '^R[0-9]+'                    THEN SUBSTRING(c.zoning FROM '^R[0-9]+')
+            WHEN c.zoning ~ '^M[0-9]-[0-9]+'             THEN SUBSTRING(c.zoning FROM '^M[0-9]-[0-9]+')
+            WHEN c.zoning ~ '^M[0-9]'                    THEN SUBSTRING(c.zoning FROM '^M[0-9]')
             ELSE NULL
         END as zoning_base
     FROM comps_base c
@@ -337,15 +338,24 @@ SELECT
     CASE WHEN c.lotarea > 0 AND z.base_far > 0
         THEN c.sale_price_clean / (c.lotarea * z.base_far) END as price_per_buildable_sf,
     CASE
-        WHEN c.num_buildings = 0 OR c.bldgarea = 0                                  THEN 'Vacant Land'
-        WHEN c.zoning LIKE 'M%' AND c.building_class IN ('F1','F2','F4','F8','F9') THEN 'Industrial Building'
-        WHEN c.zoning LIKE 'M%'                                                      THEN 'Industrial Development Site'
-        WHEN c.zoning LIKE 'R%' AND c.lotarea >= c.bldgarea                         THEN 'Residential Development Site'
-        WHEN c.zoning LIKE 'R%'                                                      THEN 'Residential Property'
-        WHEN c.zoning LIKE 'C%' AND c.lotarea >= c.bldgarea                         THEN 'Residential Development Site'
-        WHEN c.zoning LIKE 'C%'                                                      THEN 'Residential Property'
-        ELSE 'Mixed-Use Site'
-    END as asset_type
+            WHEN c.building_class = 'K4'
+                THEN 'Retail Building'
+            WHEN (c.zoning ~ 'R' OR c.zoning_base ~ '^R')
+                THEN CASE
+                    WHEN c.building_class LIKE 'V%'
+                         OR c.bldgarea = 0
+                         OR c.num_buildings = 0
+                         OR (c.lotarea > 0 AND c.lotarea * COALESCE(z.base_far, c.pluto_resid_far) >= (2 * c.bldgarea))
+                        THEN 'Development Site'
+                    ELSE 'Residential Property'
+                    END
+            WHEN c.zoning LIKE 'M%'
+                 AND c.building_class IN ('F1','F2','F4','F5','F8','F9','E1','E2','E7','E9')
+                THEN 'Industrial Building'
+            WHEN c.zoning LIKE 'M%'
+                THEN 'Industrial Development Site'
+            ELSE 'Residential Property'
+        END as asset_type
 FROM base_zoning_extract c
 LEFT JOIN deed_matches d
     ON c.borough = d.borough AND c.block = d.block AND c.lot = d.lot AND c.sale_date = d.sale_date
@@ -470,17 +480,6 @@ SELECT
 FROM filtered_comps f
 LEFT JOIN building_class_lookup bcl ON f.building_class = bcl.building_class
 WHERE f.rn = 1;
-
-UPDATE comps_dev_base_v3_staging
-SET asset_type = 'Development Site'
-WHERE buildable_sf >= 2 * bldgarea
-  AND bldgarea > 0
-  AND unitsres < 6
-  AND asset_type != 'Development Site';
-
-UPDATE comps_dev_base_v3_staging
-SET asset_type = 'Development Site'
-WHERE asset_type = 'Residential Development Site';
 
 CREATE INDEX idx_staging_bbl ON comps_dev_base_v3_staging(borough, block, lot);
 CREATE INDEX idx_staging_date ON comps_dev_base_v3_staging(sale_date);
