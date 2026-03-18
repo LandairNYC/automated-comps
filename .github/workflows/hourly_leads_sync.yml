@@ -46,7 +46,7 @@ jobs:
           AIRTABLE_PAT:               ${{ secrets.AIRTABLE_PAT }}
           AIRTABLE_BASE_ID:           ${{ secrets.AIRTABLE_BASE_ID }}
           AIRTABLE_PROPERTIES_TABLE:  ${{ secrets.AIRTABLE_PROPERTIES_TABLE }}
-        run: python scripts/geocode_leads.py --skip-pull=false
+        run: python scripts/geocode_leads.py
 
       - name: Step 2 — Compute nearest comps for leads
         env:
