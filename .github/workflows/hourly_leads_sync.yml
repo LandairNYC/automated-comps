@@ -1,0 +1,71 @@
+name: CompScope Hourly Leads Sync
+
+on:
+  schedule:
+    # Every hour at :00
+    - cron: "0 * * * *"
+
+  # Allow manual trigger from GitHub Actions UI
+  workflow_dispatch:
+    inputs:
+      skip_geocode:
+        description: "Skip geocoding step? (use if leads already geocoded)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+jobs:
+  leads_sync:
+    name: Run Leads Pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Set PYTHONPATH
+        run: echo "PYTHONPATH=$PYTHONPATH:$(pwd)" >> $GITHUB_ENV
+
+      - name: Step 1 — Geocode new leads
+        if: ${{ github.event.inputs.skip_geocode != 'true' }}
+        env:
+          DATABASE_URL:               ${{ secrets.DATABASE_URL }}
+          AIRTABLE_PAT:               ${{ secrets.AIRTABLE_PAT }}
+          AIRTABLE_BASE_ID:           ${{ secrets.AIRTABLE_BASE_ID }}
+          AIRTABLE_PROPERTIES_TABLE:  ${{ secrets.AIRTABLE_PROPERTIES_TABLE }}
+        run: python scripts/geocode_leads.py --skip-pull=false
+
+      - name: Step 2 — Compute nearest comps for leads
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python scripts/compute_nearest_comps.py --leads
+
+      - name: Step 3 — Sync nearest comps to Airtable Properties
+        env:
+          DATABASE_URL:                  ${{ secrets.DATABASE_URL }}
+          AIRTABLE_PAT:                  ${{ secrets.AIRTABLE_PAT }}
+          AIRTABLE_BASE_ID:              ${{ secrets.AIRTABLE_BASE_ID }}
+          AIRTABLE_PROPERTIES_TABLE:     ${{ secrets.AIRTABLE_PROPERTIES_TABLE }}
+          AIRTABLE_NEAREST_COMPS_FIELD:  ${{ secrets.AIRTABLE_NEAREST_COMPS_FIELD }}
+        run: python scripts/sync_leads_to_airtable.py
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: leads-sync-failure-log
+          path: "*.log"
+          retention-days: 7
