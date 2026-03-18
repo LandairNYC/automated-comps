@@ -220,8 +220,6 @@ def run_comps_mode(conn, dry_run: bool):
     print("\n📦 MODE: Comps vs Comps (comps_dev_base_v2)")
     print("-" * 50)
 
-    ensure_comp_columns(conn)
-
     print("Fetching comps...")
     comps = fetch_comps(conn)
     print(f"Loaded {len(comps)} comps with coordinates")
