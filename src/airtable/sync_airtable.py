@@ -407,9 +407,9 @@ def map_asset_type(db_asset_type: Optional[str]):
 
 
 def fetch_properties(limit: Optional[int] = None, since_date: Optional[str] = None) -> List[dict]:
-    where_clause = ""
+    and_clause = ""
     if since_date:
-        where_clause = f"WHERE sale_date >= '{since_date}'"
+        and_clause = f"AND sale_date >= '{since_date}'"
 
     query = f"""
         SELECT
@@ -454,7 +454,8 @@ def fetch_properties(limit: Optional[int] = None, since_date: Optional[str] = No
             nearest_comps_smart
 
         FROM comps_dev_base_v2
-        {where_clause}
+        WHERE asset_type != 'Residential Property'
+        {and_clause}
         ORDER BY sale_date DESC
     """
     if limit:
