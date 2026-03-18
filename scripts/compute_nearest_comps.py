@@ -154,18 +154,6 @@ def fetch_leads(conn) -> List[dict]:
         """)
         return [dict(r) for r in cur.fetchall()]
 
-
-def ensure_comp_columns(conn):
-    with conn.cursor() as cur:
-        cur.execute("""
-            ALTER TABLE comps_dev_base_v2
-            ADD COLUMN IF NOT EXISTS nearest_comps_proximity TEXT,
-            ADD COLUMN IF NOT EXISTS nearest_comps_smart     TEXT
-        """)
-    conn.commit()
-    print("✅  Columns ensured on comps_dev_base_v2")
-
-
 def write_comp_results(conn, results: List[dict]):
     total = written = 0
     total = len(results)
