@@ -2,9 +2,20 @@ name: CompScope Hourly Leads Sync
 
 on:
   schedule:
-    # Every hour at :00
-    - cron: "0 * * * *"
-
+    - cron: "0 12 * * *"   # 7am ET
+    - cron: "0 13 * * *"   # 8am ET
+    - cron: "0 14 * * *"   # 9am ET
+    - cron: "0 15 * * *"   # 10am ET
+    - cron: "0 16 * * *"   # 11am ET
+    - cron: "0 17 * * *"   # 12pm ET
+    - cron: "0 18 * * *"   # 1pm ET
+    - cron: "0 19 * * *"   # 2pm ET
+    - cron: "0 20 * * *"   # 3pm ET
+    - cron: "0 21 * * *"   # 4pm ET
+    - cron: "0 22 * * *"   # 5pm ET
+    - cron: "0 23 * * *"   # 6pm ET
+    - cron: "0 0 * * *"    # 7pm ET
+    
   # Allow manual trigger from GitHub Actions UI
   workflow_dispatch:
     inputs:
