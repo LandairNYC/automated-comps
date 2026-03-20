@@ -11,12 +11,16 @@ Computes nearest comps for two use cases:
   --leads:
     For every record in leads_geocoded, compute nearest comps
     where neighbors are drawn from comps_dev_base_v2 (the sales data).
-    Writes: nearest_comps_proximity to leads_geocoded only.
-    (No smart/zoning field for leads — leads don't have zoning data)
+    Writes: nearest_comps_proximity AND nearest_comps_bbls to leads_geocoded
 
-Output format (same for both modes):
-  123 Atlantic Ave, Brooklyn | R6A | $2.1M | 0.3 mi
-  456 Dean St, Brooklyn | R6A | $1.8M | 0.5 mi
+    nearest_comps_bbls is a pipe-delimited list of the 6 BBLs:
+      3-02156-0005|3-01324-0014|3-03565-0030|2-02869-0027|4-00865-0033|1-00177-0028
+    This is used by sync_leads_to_airtable.py to write linked records.
+
+CHANGES FROM PREVIOUS VERSION:
+  - compute_nearest() now returns a tuple (text_string, bbl_string) instead of just text
+  - write_lead_results() now writes nearest_comps_bbls in addition to nearest_comps_proximity
+  - ensure_leads_columns() adds nearest_comps_bbls column if it doesn't exist
 
 Usage:
   python scripts/compute_nearest_comps.py              # comps vs comps
@@ -28,7 +32,7 @@ Usage:
 import argparse
 import os
 import math
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -81,20 +85,23 @@ def compute_nearest(
     top_n: int = TOP_N,
     zoning_filter: bool = False,
     exclude_bbl: Optional[str] = None,
-) -> Optional[str]:
+) -> Tuple[Optional[str], Optional[str]]:
     """
     Find top N closest neighbors to target from neighbor_pool.
 
-    target:        dict with latitude, longitude
-    neighbor_pool: list of comp records to search through
-    zoning_filter: only consider neighbors with same zoning_base as target
-    exclude_bbl:   skip record with this BBL (used when target is in the pool)
+    Returns a tuple: (text_string, bbl_string)
+
+      text_string  — formatted lines for the Nearest Comps text field in Airtable
+      bbl_string   — pipe-delimited BBLs for linked record lookup
+                     e.g. "3-02156-0005|3-01324-0014|3-03565-0030"
+
+    Returns (None, None) if no neighbors found.
     """
     lat1 = float(target.get("latitude"))  if target.get("latitude")  is not None else None
     lon1 = float(target.get("longitude")) if target.get("longitude") is not None else None
 
     if lat1 is None or lon1 is None:
-        return None
+        return None, None
 
     candidates = []
     for rec in neighbor_pool:
@@ -114,11 +121,15 @@ def compute_nearest(
         candidates.append((dist, rec))
 
     if not candidates:
-        return None
+        return None, None
 
     candidates.sort(key=lambda x: x[0])
-    lines = [fmt_comp(rec, dist) for dist, rec in candidates[:top_n]]
-    return "\n".join(lines)
+    top = candidates[:top_n]
+
+    text_string = "\n".join(fmt_comp(rec, dist) for dist, rec in top)
+    bbl_string  = "|".join(rec.get("bbl", "") for _, rec in top if rec.get("bbl"))
+
+    return text_string, bbl_string
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
@@ -129,21 +140,30 @@ def get_connection():
     return psycopg2.connect(DATABASE_URL)
 
 
+def ensure_leads_columns(conn):
+    """Add nearest_comps_bbls column to leads_geocoded if it doesn't exist."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            ALTER TABLE leads_geocoded
+            ADD COLUMN IF NOT EXISTS nearest_comps_bbls TEXT
+        """)
+    conn.commit()
+    print("✅  Column ensured: nearest_comps_bbls")
+
+
 def fetch_comps(conn) -> List[dict]:
-    """Load all comps from comps_dev_base_v2 with coordinates."""
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("""
             SELECT bbl, address, borough, sale_price_clean,
                    zoning, zoning_base, latitude, longitude
             FROM comps_dev_base_v2
             WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+            AND asset_type != 'Residential Property'
             ORDER BY sale_date DESC
         """)
         return [dict(r) for r in cur.fetchall()]
 
-
 def fetch_leads(conn) -> List[dict]:
-    """Load all leads from leads_geocoded with coordinates."""
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("""
             SELECT airtable_record_id, full_address, bbl,
@@ -154,7 +174,9 @@ def fetch_leads(conn) -> List[dict]:
         """)
         return [dict(r) for r in cur.fetchall()]
 
+
 def write_comp_results(conn, results: List[dict]):
+    """Write proximity + smart text strings to comps_dev_base_v2. Unchanged from before."""
     total = written = 0
     total = len(results)
     for i in range(0, total, BATCH_SIZE):
@@ -186,6 +208,11 @@ def write_comp_results(conn, results: List[dict]):
 
 
 def write_lead_results(conn, results: List[dict]):
+    """
+    Write to leads_geocoded:
+      nearest_comps_proximity  — plain text (same as before)
+      nearest_comps_bbls       — NEW: pipe-delimited BBLs for linked record lookup
+    """
     total = written = 0
     total = len(results)
     for i in range(0, total, BATCH_SIZE):
@@ -197,10 +224,12 @@ def write_lead_results(conn, results: List[dict]):
                 for row in batch:
                     cur.execute("""
                         UPDATE leads_geocoded
-                        SET nearest_comps_proximity = %s
+                        SET nearest_comps_proximity = %s,
+                            nearest_comps_bbls      = %s
                         WHERE airtable_record_id = %s
                     """, (
                         row["nearest_comps_proximity"],
+                        row["nearest_comps_bbls"],
                         row["airtable_record_id"],
                     ))
             batch_conn.commit()
@@ -232,17 +261,22 @@ def run_comps_mode(conn, dry_run: bool):
         if i % 100 == 0:
             print(f"  [{i}/{len(comps)}] processing...")
 
-        proximity = compute_nearest(target, comps, zoning_filter=False, exclude_bbl=target.get("bbl"))
-        smart     = compute_nearest(target, comps, zoning_filter=True,  exclude_bbl=target.get("bbl"))
+        # Comps mode: BBL string not needed, discard with _
+        proximity_text, _ = compute_nearest(
+            target, comps, zoning_filter=False, exclude_bbl=target.get("bbl")
+        )
+        smart_text, _ = compute_nearest(
+            target, comps, zoning_filter=True, exclude_bbl=target.get("bbl")
+        )
 
-        if proximity is None:
+        if proximity_text is None:
             skipped += 1
             continue
 
         results.append({
             "bbl":                     target["bbl"],
-            "nearest_comps_proximity": proximity,
-            "nearest_comps_smart":     smart,
+            "nearest_comps_proximity": proximity_text,
+            "nearest_comps_smart":     smart_text,
         })
 
     print(f"\nComputed: {len(results)} | Skipped: {skipped}")
@@ -265,6 +299,9 @@ def run_leads_mode(conn, dry_run: bool):
     print("\n🏠 MODE: Leads vs Comps (leads_geocoded → comps_dev_base_v2)")
     print("-" * 50)
 
+    if not dry_run:
+        ensure_leads_columns(conn)
+
     print("Fetching comps as neighbor pool...")
     comps = fetch_comps(conn)
     print(f"Loaded {len(comps)} comps")
@@ -281,16 +318,18 @@ def run_leads_mode(conn, dry_run: bool):
         if i % 100 == 0:
             print(f"  [{i}/{len(leads)}] processing...")
 
-        # No exclude_bbl — leads and comps are separate tables
-        proximity = compute_nearest(lead, comps, zoning_filter=False, exclude_bbl=None)
+        proximity_text, bbl_string = compute_nearest(
+            lead, comps, zoning_filter=False, exclude_bbl=None
+        )
 
-        if proximity is None:
+        if proximity_text is None:
             skipped += 1
             continue
 
         results.append({
             "airtable_record_id":      lead["airtable_record_id"],
-            "nearest_comps_proximity": proximity,
+            "nearest_comps_proximity": proximity_text,
+            "nearest_comps_bbls":      bbl_string,   # NEW
         })
 
     print(f"\nComputed: {len(results)} leads | Skipped: {skipped}")
@@ -298,8 +337,10 @@ def run_leads_mode(conn, dry_run: bool):
     if results:
         print("\n--- SAMPLE ---")
         print(f"Lead: {results[0]['airtable_record_id']}")
+        print("Text comps:")
         for line in (results[0]["nearest_comps_proximity"] or "").split("\n"):
             print(f"  {line}")
+        print(f"BBLs: {results[0]['nearest_comps_bbls']}")
 
     if dry_run:
         print("\n[DRY RUN] No changes written.")
