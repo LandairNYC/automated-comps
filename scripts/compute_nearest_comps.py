@@ -299,9 +299,6 @@ def run_leads_mode(conn, dry_run: bool):
     print("\n🏠 MODE: Leads vs Comps (leads_geocoded → comps_dev_base_v2)")
     print("-" * 50)
 
-    if not dry_run:
-        ensure_leads_columns(conn)
-
     print("Fetching comps as neighbor pool...")
     comps = fetch_comps(conn)
     print(f"Loaded {len(comps)} comps")
